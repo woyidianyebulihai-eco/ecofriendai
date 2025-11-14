@@ -1,13 +1,22 @@
 import streamlit as st
 from ultralytics import YOLO
+from roboflow import Roboflow
+import tempfile
 import cv2, yaml, numpy as np
 from PIL import Image
 
 @st.cache_resource
-def load_yolo_model():
-    return YOLO("yolov8n.pt")
+def load_rf_model():
+    rf = Roboflow(api_key=st.secrets["ROBOFLOW_API_KEY"])
+    workspace = st.secrets["ROBOFLOW_WORKSPACE"]
+    project_slug = st.secrets["ROBOFLOW_PROJECT"]
+    version_num = int(st.secrets["ROBOFLOW_VERSION"])
+    project = rf.workspace(workspace).project(project_slug)
+    model = project.version(version_num).model
+    return model
 
-yolo_model = load_yolo_model()
+rf_model = load_rf_model()
+
 
 # -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="EcoHome Advisor", layout="wide")
