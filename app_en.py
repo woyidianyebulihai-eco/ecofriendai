@@ -202,10 +202,10 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, cfg: dict):
             "raw_predictions": {},
         }
 
-    api_key = cfg["api_key"]
-model_path = cfg["model_path"]   # e.g. "house-segmentation-fmysn-urd6s/1"
+   api_key = cfg["api_key"]
+   model_path = cfg["model_path"]   # e.g. "house-segmentation-fmysn-urd6s/1"
 
-url = f"https://detect.roboflow.com/{model_path}?api_key={api_key}"
+   url = f"https://detect.roboflow.com/{model_path}?api_key={api_key}"
 
 
     # Save image to temp file and encode as base64
