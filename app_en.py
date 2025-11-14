@@ -25,90 +25,18 @@ import streamlit as st
 import yaml
 from PIL import Image
 
-# -------------------- PAGE SETUP & GLOBAL STYLE --------------------
+# -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="EcoHome Advisor", layout="wide")
+st.title("EcoHome Advisor — Sustainable Renovation Recommender")
 
-# Custom CSS for nicer UI
-st.markdown(
-    """
-    <style>
-    /* Base background */
-    .stApp {
-        background: radial-gradient(circle at top left, #f3f7ff 0, #ffffff 40%, #f9fbff 100%);
-    }
+st.markdown("""
+**How it works**
 
-    /* Center main title area a bit and give breathing room */
-    .main-title {
-        font-size: 2.2rem;
-        font-weight: 700;
-        margin-bottom: 0.2rem;
-    }
-    .subtitle {
-        font-size: 1.0rem;
-        color: #5f6472;
-        margin-bottom: 0.8rem;
-    }
-
-    /* Card style containers */
-    .card {
-        background-color: #ffffff;
-        border-radius: 0.8rem;
-        padding: 1.0rem 1.1rem;
-        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
-        border: 1px solid rgba(148, 163, 184, 0.15);
-        margin-bottom: 0.75rem;
-    }
-
-    .card-title {
-        font-weight: 600;
-        margin-bottom: 0.25rem;
-    }
-
-    .tag-pill {
-        display: inline-block;
-        padding: 0.1rem 0.6rem;
-        border-radius: 999px;
-        font-size: 0.75rem;
-        margin-right: 0.3rem;
-        background-color: #e0f2fe;
-        color: #0369a1;
-    }
-
-    .metric-label {
-        font-size: 0.8rem;
-        color: #6b7280;
-    }
-    .metric-value {
-        font-size: 1.05rem;
-        font-weight: 600;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# Hero section
-st.markdown(
-    """
-    <div class="card" style="margin-bottom: 1rem;">
-      <div class="main-title">🏡 EcoHome Advisor</div>
-      <div class="subtitle">
-        A small AI assistant that reads your home's photo + climate info, then suggests
-        climate-appropriate, energy-efficient retrofit strategies.
-      </div>
-      <div style="
-        font-size: 0.85rem;
-        color:#4b5563;
-        padding:0.4rem 0.6rem;
-        border-radius:0.5rem;
-        background-color:#eef2ff;
-        display:inline-block;">
-        Upload a facade/roof photo → tune inputs → get science-informed recommendations.
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+1. (Optional) Upload a photo of your home's exterior or roof.  
+   - A house-segmentation model will estimate materials such as roof, siding, stone, fascia, trim, etc.
+2. Fill out the inputs on the left (climate, humidity, orientation, window-to-wall ratio, budget).
+3. Click **Analyze & Recommend** to see recommendations and an AI reasoning explanation.
+""")
 
 HOUSE_MATERIAL_CLASSES = [
     "Horizontal Siding",
@@ -407,98 +335,46 @@ def ai_reasoning(ctx: dict, recs: list, budget_cfg: dict) -> str:
 
     return "\n".join(lines)
 
-# -------------------- SIDEBAR (grouped nicely) --------------------
+# -------------------- SIDEBAR --------------------
 with st.sidebar:
-    st.markdown("### 🔧 Input Panel")
+    st.header("Inputs")
+    climate_zone = st.selectbox("Climate zone", ["hot_humid", "temperate", "cold_dry"], index=1)
+    humidity = st.selectbox("Humidity level", ["low", "medium", "high"], index=1)
+    orientation = st.selectbox("Facade orientation", ["north", "south", "east", "west"], index=1)
+    window_area_ratio = st.slider("Window-to-wall ratio", 0.0, 0.6, 0.2, 0.01)
+    budget = st.selectbox("Budget tier", ["low", "mid", "high"], index=1)
+    rules_text = st.text_area("Rules (YAML)", value=DEFAULT_RULES, height=360)
 
-    with st.expander("🌎Climate & Site", expanded=True):
-        climate_zone = st.selectbox(
-            "Climate zone", ["hot_humid", "temperate", "cold_dry"], index=1
-        )
-        humidity = st.selectbox(
-            "Humidity level", ["low", "medium", "high"], index=1
-        )
-        orientation = st.selectbox(
-            "Main facade orientation", ["north", "south", "east", "west"], index=1
-        )
-        window_area_ratio = st.slider(
-            "Window-to-wall ratio", 0.0, 0.6, 0.2, 0.01
-        )
-
-    with st.expander("Budget", expanded=True):
-        budget = st.selectbox("Budget tier", ["low", "mid", "high"], index=1)
-
-    with st.expander("Advanced (rules YAML)", expanded=False):
-        rules_text = st.text_area("Rules (YAML)", value=DEFAULT_RULES, height=360)
-
-# -------------------- MAIN LAYOUT --------------------
+# -------------------- MAIN UI --------------------
 left, right = st.columns([1, 1])
 
 img_rgb_np = None
 seg_features = None
 
 with left:
-    st.markdown("#### ① Upload Photo (optional)")
-    with st.container():
-        img_file = st.file_uploader("Upload facade / roof photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
+    st.subheader("① Upload Photo (optional)")
+    img_file = st.file_uploader("Choose JPG/PNG", type=["jpg", "jpeg", "png"])
 
-        if img_file:
-            image = Image.open(img_file).convert("RGB")
-            st.image(image, caption="Uploaded image", use_container_width=True)
-            img_rgb_np = np.array(image)
+    if img_file:
+        image = Image.open(img_file).convert("RGB")
+        st.image(image, caption="Uploaded image")
+        img_rgb_np = np.array(image)
 
-            with st.spinner("Running house segmentation via Roboflow Hosted API..."):
-                seg_features = analyze_house_segments_with_roboflow(image, rf_cfg)
+        with st.spinner("Running house segmentation via Roboflow Hosted API..."):
+            seg_features = analyze_house_segments_with_roboflow(image, rf_cfg)
 
-            # Nice summary instead of raw JSON
-            st.markdown("**Detected facade composition:**")
-            main_mat = seg_features["main_wall_material"]
-            roof_share = seg_features["roof_share"]
-            have_garage = seg_features["has_garage"]
-            have_entry = seg_features["has_entry_door"]
+        st.write("**Segmentation summary:**")
+        st.json(
+            {
+                "main_wall_material": seg_features["main_wall_material"],
+                "roof_share": seg_features["roof_share"],
+                "wall_material_shares": seg_features["wall_material_shares"],
+                "has_garage": seg_features["has_garage"],
+                "has_entry_door": seg_features["has_entry_door"],
+            }
+        )
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown(
-                    f"""
-                    <div class="card">
-                      <div class="card-title">Main wall material</div>
-                      <div class="metric-value">{main_mat}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"""
-                    <div class="card">
-                      <div class="card-title">Roof visibility</div>
-                      <div class="metric-value">{roof_share:.2f}</div>
-                      <div class="metric-label">Fraction of image area classified as roof</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            with col_b:
-                st.markdown(
-                    f"""
-                    <div class="card">
-                      <div class="card-title">Attached garage detected</div>
-                      <div class="metric-value">{have_garage}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"""
-                    <div class="card">
-                      <div class="card-title">Entry door detected</div>
-                      <div class="metric-value">{have_entry}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-    run = st.button("🔍 Analyze & Recommend", use_container_width=True)
+    run = st.button("Analyze & Recommend")
 
 # -------------------- ANALYSIS OUTPUT --------------------
 if run:
