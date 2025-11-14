@@ -56,8 +56,8 @@ def load_rf_model():
 
     rf = Roboflow(api_key=api_key)
     project = rf.workspace(workspace).project(project_slug)
-    model = project.version(version_num).model
-    return model
+    model = project.version(version_num)
+    return version
 
 rf_model = load_rf_model()
 
@@ -212,7 +212,7 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, model):
 
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         pil_image.save(tmp.name)
-        pred = model.predict(tmp.name, confidence=40, overlap=30).json()
+        pred = rf_version.predict(tmp.name, hosted=True).json()
 
     class_areas = defaultdict(float)
     has_garage = False
