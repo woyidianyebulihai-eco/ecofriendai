@@ -48,13 +48,6 @@ HOUSE_MATERIAL_CLASSES = [
 # -------------------- LOAD ROBOFLOW CONFIG (HTTP API, NO SDK) --------------------
 @st.cache_resource
 def load_roboflow_config():
-    """
-    Read Roboflow config from secrets.
-    We expect ROBOFLOW_MODEL_PATH to be exactly the string
-    shown on the Roboflow Deploy page after detect.roboflow.com/.
-    e.g. 'house-segmentation-fmysn-urd6s/1'
-    or   'project/house-segmentation-fmysn-urd6s/1'
-    """
     try:
         api_key = st.secrets["ROBOFLOW_API_KEY"]
         model_path = st.secrets["ROBOFLOW_MODEL_PATH"]
@@ -67,6 +60,7 @@ def load_roboflow_config():
         return None
 
     return {"api_key": api_key, "model_path": model_path}
+
 
 rf_cfg = load_roboflow_config()
 
