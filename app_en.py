@@ -5,23 +5,25 @@
 # pillow
 # numpy
 # pyyaml
-# roboflow
+# requests
 #
 # ---------------------------------------------------------
 # Add your Roboflow credentials to .streamlit/secrets.toml:
 #
-# ROBOFLOW_API_KEY = "your_api_key"
-# ROBOFLOW_WORKSPACE = "your_workspace_slug"
-# ROBOFLOW_PROJECT = "your_project_slug"
-# ROBOFLOW_VERSION = 1
+# ROBOFLOW_API_KEY = "your_api_key_here"
+# ROBOFLOW_MODEL_ID = "your-model-id"          # e.g. "house-segmentation-xyz"
+# ROBOFLOW_MODEL_VERSION = 1
 # ---------------------------------------------------------
 
-import streamlit as st
-import yaml
-import numpy as np
-from PIL import Image
+import base64
 import tempfile
 from collections import defaultdict
+
+import numpy as np
+import requests
+import streamlit as st
+import yaml
+from PIL import Image
 
 # -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="EcoHome Advisor", layout="wide")
@@ -36,37 +38,39 @@ st.markdown("""
 3. Click **Analyze & Recommend** to see recommendations and an AI reasoning explanation.
 """)
 
-# -------------------- LOAD ROBOFLOW MODEL --------------------
-@st.cache_resource
-def load_rf_model():
-    """Load Roboflow segmentation model. Return None if missing configuration."""
-    try:
-        from roboflow import Roboflow
-        api_key = st.secrets["ROBOFLOW_API_KEY"]
-        workspace = st.secrets["ROBOFLOW_WORKSPACE"]
-        project_slug = st.secrets["ROBOFLOW_PROJECT"]
-        version_num = int(st.secrets.get("ROBOFLOW_VERSION", 1))
-    except Exception as e:
-        st.sidebar.warning(
-            "Roboflow model not configured correctly. "
-            "Segmentation analysis will be skipped.\n"
-            f"Details: {e}"
-        )
-        return None
-
-    rf = Roboflow(api_key=api_key)
-    project = rf.workspace(workspace).project(project_slug)
-    model = project.version(version_num)
-    return version
-
-rf_model = load_rf_model()
-
 HOUSE_MATERIAL_CLASSES = [
     "Horizontal Siding",
     "Vertical Siding",
     "Shakes",
     "Stone",
 ]
+
+# -------------------- LOAD ROBOFLOW CONFIG (HTTP API, NO SDK) --------------------
+@st.cache_resource
+def load_roboflow_config():
+    """
+    Read Roboflow config from secrets.
+    We will call the Hosted API via HTTPS (detect.roboflow.com), no local SDK.
+    """
+    try:
+        api_key = st.secrets["ROBOFLOW_API_KEY"]
+        model_id = st.secrets["ROBOFLOW_MODEL_ID"]  # e.g. "house-segmentation-xyz"
+        version = int(st.secrets.get("ROBOFLOW_MODEL_VERSION", 1))
+    except Exception as e:
+        st.sidebar.warning(
+            "Roboflow Hosted API not configured correctly. "
+            "Segmentation will be skipped.\n"
+            f"Details: {e}"
+        )
+        return None
+
+    return {
+        "api_key": api_key,
+        "model_id": model_id,
+        "version": version,
+    }
+
+rf_cfg = load_roboflow_config()
 
 # -------------------- DEFAULT RULES (editable) --------------------
 DEFAULT_RULES = """
@@ -85,7 +89,7 @@ climate_zones:
           - "Use vapor-open exterior or interior insulation"
           - "Improve moisture management layers"
         saving_pct: "5-12%"
-        rationale: "Stone walls can trap moisture; vapor-open layers prevent mold."
+        rationale: "Stone walls can trap moisture; vapor-open layers help prevent mold."
       - when: "main_wall_material in ['Horizontal Siding','Vertical Siding','Shakes'] and humidity == 'high'"
         recommend:
           - "Improve ventilated rain-screen behind siding"
@@ -156,13 +160,11 @@ budget:
 # -------------------- IMAGE ANALYSIS HELPERS (NO OpenCV) --------------------
 def simple_roof_lightness_score(img_rgb_np: np.ndarray) -> float:
     """
-    Estimate roof brightness from the upper half of the image using a
-    standard luma formula (perceived brightness).
-    img_rgb_np: H x W x 3 array in RGB.
+    Estimate roof brightness from the upper half of the image using
+    standard luma formula.
     """
     h, w, _ = img_rgb_np.shape
     roi = img_rgb_np[: h // 2, :, :].astype(np.float32)
-    # Luma (Rec. 601): Y = 0.299 R + 0.587 G + 0.114 B
     r = roi[:, :, 0]
     g = roi[:, :, 1]
     b = roi[:, :, 2]
@@ -171,33 +173,56 @@ def simple_roof_lightness_score(img_rgb_np: np.ndarray) -> float:
 
 def estimate_glass_reflection_ratio(img_rgb_np: np.ndarray) -> float:
     """
-    Very rough heuristic: fraction of pixels that are both very bright and
-    more blue-ish than red → approximate "reflective glass / glare".
+    Rough heuristic: fraction of pixels that are both very bright and
+    more blue-ish than red -> approximate reflective glass / strong glare.
     """
     arr = img_rgb_np.astype(np.float32)
     r = arr[:, :, 0]
     g = arr[:, :, 1]
     b = arr[:, :, 2]
-
     gray = 0.299 * r + 0.587 * g + 0.114 * b
     bright = gray > 200.0
-
     diff = b - r
     blueish = diff > 40.0
-
     mask = bright & blueish
     ratio = float(mask.sum()) / float(arr.shape[0] * arr.shape[1] + 1e-6)
     return ratio
 
-def analyze_house_segments_with_roboflow(pil_image: Image.Image, model):
+# -------------------- ROBOFLOW SEGMENTATION VIA HTTPS --------------------
+def analyze_house_segments_with_roboflow(pil_image: Image.Image, cfg: dict):
     """
-    Use Roboflow house segmentation to approximate:
-    - main_wall_material
-    - wall_material_shares
-    - roof_share
-    - has_garage / has_entry_door
+    Call Roboflow Hosted API (detect.roboflow.com) to run segmentation.
+    No roboflow Python package, no libGL issues.
     """
-    if model is None:
+    if cfg is None:
+        return {
+            "main_wall_material": "unknown",
+            "wall_material_shares": {m: 0.0 for m in HOUSE_MATERIAL_CLASSES},
+            "roof_share": 0.0,
+            "has_garage": False,
+            "has_entry_door": False,
+            "raw_predictions": {},
+        }
+
+    api_key = cfg["api_key"]
+    model_id = cfg["model_id"]          # e.g. "house-segmentation-xyz"
+    version = cfg["version"]            # e.g. 1
+
+    # Save image to temp file and encode as base64
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        pil_image.save(tmp.name, format="JPEG")
+        with open(tmp.name, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    url = f"https://detect.roboflow.com/{model_id}/{version}?api_key={api_key}"
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    try:
+        resp = requests.post(url, data=img_b64, headers=headers, timeout=30)
+        resp.raise_for_status()
+        pred = resp.json()
+    except Exception as e:
+        st.sidebar.warning(f"Roboflow API error, segmentation skipped: {e}")
         return {
             "main_wall_material": "unknown",
             "wall_material_shares": {m: 0.0 for m in HOUSE_MATERIAL_CLASSES},
@@ -209,11 +234,6 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, model):
 
     w, h = pil_image.size
     total_area = w * h
-
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        pil_image.save(tmp.name)
-        pred = rf_version.predict(tmp.name, hosted=True).json()
-
     class_areas = defaultdict(float)
     has_garage = False
     has_entry_door = False
@@ -235,7 +255,7 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, model):
         if wall_shares
         else "unknown"
     )
-    roof_share = class_areas["Roof"] / (total_area + 1e-6)
+    roof_share = class_areas["Roof"] / (total_area + 1e-6) if "Roof" in class_areas else 0.0
 
     return {
         "main_wall_material": main_wall_material,
@@ -318,7 +338,7 @@ def ai_reasoning(ctx: dict, recs: list, budget_cfg: dict) -> str:
 # -------------------- SIDEBAR --------------------
 with st.sidebar:
     st.header("Inputs")
-    climate_zone = st.selectbox("Climate zone", ["hot_humid", "temperate", "cold_dry"])
+    climate_zone = st.selectbox("Climate zone", ["hot_humid", "temperate", "cold_dry"], index=1)
     humidity = st.selectbox("Humidity level", ["low", "medium", "high"], index=1)
     orientation = st.selectbox("Facade orientation", ["north", "south", "east", "west"], index=1)
     window_area_ratio = st.slider("Window-to-wall ratio", 0.0, 0.6, 0.2, 0.01)
@@ -338,11 +358,10 @@ with left:
     if img_file:
         image = Image.open(img_file).convert("RGB")
         st.image(image, caption="Uploaded image")
-
         img_rgb_np = np.array(image)
 
-        with st.spinner("Running house segmentation..."):
-            seg_features = analyze_house_segments_with_roboflow(image, rf_model)
+        with st.spinner("Running house segmentation via Roboflow Hosted API..."):
+            seg_features = analyze_house_segments_with_roboflow(image, rf_cfg)
 
         st.write("**Segmentation summary:**")
         st.json(
@@ -360,7 +379,7 @@ with left:
 # -------------------- ANALYSIS OUTPUT --------------------
 if run:
     try:
-        rules = yaml.safe_load(rules_text)
+        rules = yaml.safe_load(rules_text) or {}
     except Exception as e:
         st.error(f"YAML error: {e}")
         st.stop()
@@ -400,7 +419,8 @@ if run:
         st.subheader("② Recommendations")
         if not recs:
             st.info(
-                "No recommendations matched. Try adjusting inputs or editing your YAML rules."
+                "No recommendations matched. "
+                "Try adjusting inputs or editing your YAML rules."
             )
         else:
             for r in recs:
