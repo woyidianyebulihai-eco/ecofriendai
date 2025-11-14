@@ -1,6 +1,13 @@
 import streamlit as st
+from ultralytics import YOLO
 import cv2, yaml, numpy as np
 from PIL import Image
+
+@st.cache_resource
+def load_yolo_model():
+    return YOLO("yolov8n.pt")
+
+yolo_model = load_yolo_model()
 
 # -------------------- PAGE SETUP --------------------
 st.set_page_config(page_title="EcoHome Advisor", layout="wide")
