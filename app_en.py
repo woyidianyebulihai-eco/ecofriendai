@@ -2,10 +2,9 @@
 # ---------------------------------------------------------
 # Requirements (requirements.txt):
 # streamlit
-# opencv-python
 # pillow
-# pyyaml
 # numpy
+# pyyaml
 # roboflow
 #
 # ---------------------------------------------------------
@@ -18,7 +17,6 @@
 # ---------------------------------------------------------
 
 import streamlit as st
-import cv2
 import yaml
 import numpy as np
 from PIL import Image
@@ -50,7 +48,8 @@ def load_rf_model():
         version_num = int(st.secrets.get("ROBOFLOW_VERSION", 1))
     except Exception as e:
         st.sidebar.warning(
-            "Roboflow model not configured. Segmentation analysis will be skipped.\n"
+            "Roboflow model not configured correctly. "
+            "Segmentation analysis will be skipped.\n"
             f"Details: {e}"
         )
         return None
@@ -66,7 +65,7 @@ HOUSE_MATERIAL_CLASSES = [
     "Horizontal Siding",
     "Vertical Siding",
     "Shakes",
-    "Stone"
+    "Stone",
 ]
 
 # -------------------- DEFAULT RULES (editable) --------------------
@@ -154,26 +153,50 @@ budget:
       - "High-performance windows/doors"
 """
 
-# -------------------- IMAGE ANALYSIS HELPERS --------------------
-def simple_roof_lightness_score(img_bgr):
-    """Estimate roof brightness from upper half of image using LAB L-channel."""
-    h, w = img_bgr.shape[:2]
-    roi = img_bgr[:h // 2, :]
-    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-    return float(np.mean(lab[:, :, 0]))
+# -------------------- IMAGE ANALYSIS HELPERS (NO OpenCV) --------------------
+def simple_roof_lightness_score(img_rgb_np: np.ndarray) -> float:
+    """
+    Estimate roof brightness from the upper half of the image using a
+    standard luma formula (perceived brightness).
+    img_rgb_np: H x W x 3 array in RGB.
+    """
+    h, w, _ = img_rgb_np.shape
+    roi = img_rgb_np[: h // 2, :, :].astype(np.float32)
+    # Luma (Rec. 601): Y = 0.299 R + 0.587 G + 0.114 B
+    r = roi[:, :, 0]
+    g = roi[:, :, 1]
+    b = roi[:, :, 2]
+    L = 0.299 * r + 0.587 * g + 0.114 * b
+    return float(L.mean())
 
-def estimate_glass_reflection_ratio(img_bgr):
-    """Rough estimate of bright reflective/glass-like pixels."""
-    b, g, r = cv2.split(img_bgr)
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    _, bright = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-    diff = cv2.subtract(b, r)
-    _, blueish = cv2.threshold(diff, 40, 255, cv2.THRESH_BINARY)
-    mask = cv2.bitwise_and(bright, blueish)
-    return float(np.sum(mask > 0)) / float(img_bgr.shape[0] * img_bgr.shape[1] + 1e-6)
+def estimate_glass_reflection_ratio(img_rgb_np: np.ndarray) -> float:
+    """
+    Very rough heuristic: fraction of pixels that are both very bright and
+    more blue-ish than red → approximate "reflective glass / glare".
+    """
+    arr = img_rgb_np.astype(np.float32)
+    r = arr[:, :, 0]
+    g = arr[:, :, 1]
+    b = arr[:, :, 2]
 
-def analyze_house_segments_with_roboflow(pil_image, model):
-    """Use Roboflow segmentation model to extract facade/roof features."""
+    gray = 0.299 * r + 0.587 * g + 0.114 * b
+    bright = gray > 200.0
+
+    diff = b - r
+    blueish = diff > 40.0
+
+    mask = bright & blueish
+    ratio = float(mask.sum()) / float(arr.shape[0] * arr.shape[1] + 1e-6)
+    return ratio
+
+def analyze_house_segments_with_roboflow(pil_image: Image.Image, model):
+    """
+    Use Roboflow house segmentation to approximate:
+    - main_wall_material
+    - wall_material_shares
+    - roof_share
+    - has_garage / has_entry_door
+    """
     if model is None:
         return {
             "main_wall_material": "unknown",
@@ -181,7 +204,7 @@ def analyze_house_segments_with_roboflow(pil_image, model):
             "roof_share": 0.0,
             "has_garage": False,
             "has_entry_door": False,
-            "raw_predictions": {}
+            "raw_predictions": {},
         }
 
     w, h = pil_image.size
@@ -204,8 +227,14 @@ def analyze_house_segments_with_roboflow(pil_image, model):
         if cls == "Entry Door":
             has_entry_door = True
 
-    wall_shares = {m: class_areas[m] / (total_area + 1e-6) for m in HOUSE_MATERIAL_CLASSES}
-    main_wall_material = max(wall_shares.items(), key=lambda kv: kv[1])[0] if wall_shares else "unknown"
+    wall_shares = {
+        m: class_areas[m] / (total_area + 1e-6) for m in HOUSE_MATERIAL_CLASSES
+    }
+    main_wall_material = (
+        max(wall_shares.items(), key=lambda kv: kv[1])[0]
+        if wall_shares
+        else "unknown"
+    )
     roof_share = class_areas["Roof"] / (total_area + 1e-6)
 
     return {
@@ -214,17 +243,17 @@ def analyze_house_segments_with_roboflow(pil_image, model):
         "roof_share": float(roof_share),
         "has_garage": has_garage,
         "has_entry_door": has_entry_door,
-        "raw_predictions": pred
+        "raw_predictions": pred,
     }
 
 # -------------------- RULE ENGINE --------------------
-def eval_condition(cond, ctx):
+def eval_condition(cond: str, ctx: dict) -> bool:
     try:
         return eval(cond, {}, ctx)
     except Exception:
         return False
 
-def apply_rules(rules, ctx):
+def apply_rules(rules: dict, ctx: dict):
     outputs = []
     cz = ctx.get("climate_zone", "temperate")
     zone = rules.get("climate_zones", {}).get(cz, {})
@@ -234,17 +263,19 @@ def apply_rules(rules, ctx):
             continue
         for rule in recs:
             if eval_condition(rule.get("when", "True"), ctx):
-                outputs.append({
-                    "part": part,
-                    "recommend": rule.get("recommend", []),
-                    "saving_pct": rule.get("saving_pct", "—"),
-                    "rationale": rule.get("rationale", "")
-                })
+                outputs.append(
+                    {
+                        "part": part,
+                        "recommend": rule.get("recommend", []),
+                        "saving_pct": rule.get("saving_pct", "—"),
+                        "rationale": rule.get("rationale", ""),
+                    }
+                )
 
     budget_cfg = rules.get("budget", {}).get(ctx.get("budget", "mid"), {})
     return outputs, budget_cfg
 
-def ai_reasoning(ctx, recs, budget_cfg):
+def ai_reasoning(ctx: dict, recs: list, budget_cfg: dict) -> str:
     lines = []
     lines.append(
         f"- **Climate**: zone = `{ctx['climate_zone']}`, "
@@ -260,7 +291,7 @@ def ai_reasoning(ctx, recs, budget_cfg):
         f"- **Window ratio** (user input): {ctx['window_area_ratio']:.2f}"
     )
 
-    lines.append("\n- **Matched Recommendations**:")
+    lines.append("\n- **Matched recommendations**:")
     if recs:
         for r in recs:
             lines.append(
@@ -279,7 +310,7 @@ def ai_reasoning(ctx, recs, budget_cfg):
 
     lines.append(
         "\n_These recommendations combine material segmentation with simplified "
-        "building physics principles for climate-appropriate improvements._"
+        "building-physics principles for climate-appropriate improvements._"
     )
 
     return "\n".join(lines)
@@ -297,7 +328,7 @@ with st.sidebar:
 # -------------------- MAIN UI --------------------
 left, right = st.columns([1, 1])
 
-img_bgr = None
+img_rgb_np = None
 seg_features = None
 
 with left:
@@ -307,19 +338,22 @@ with left:
     if img_file:
         image = Image.open(img_file).convert("RGB")
         st.image(image, caption="Uploaded image")
-        img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+        img_rgb_np = np.array(image)
 
         with st.spinner("Running house segmentation..."):
             seg_features = analyze_house_segments_with_roboflow(image, rf_model)
 
         st.write("**Segmentation summary:**")
-        st.json({
-            "main_wall_material": seg_features["main_wall_material"],
-            "roof_share": seg_features["roof_share"],
-            "wall_material_shares": seg_features["wall_material_shares"],
-            "has_garage": seg_features["has_garage"],
-            "has_entry_door": seg_features["has_entry_door"]
-        })
+        st.json(
+            {
+                "main_wall_material": seg_features["main_wall_material"],
+                "roof_share": seg_features["roof_share"],
+                "wall_material_shares": seg_features["wall_material_shares"],
+                "has_garage": seg_features["has_garage"],
+                "has_entry_door": seg_features["has_entry_door"],
+            }
+        )
 
     run = st.button("Analyze & Recommend")
 
@@ -335,10 +369,10 @@ if run:
     roof_color = "unknown"
     glass_ratio = 0.0
 
-    if img_bgr is not None:
-        roof_L = simple_roof_lightness_score(img_bgr)
+    if img_rgb_np is not None:
+        roof_L = simple_roof_lightness_score(img_rgb_np)
         roof_color = "dark" if roof_L < 140 else "light"
-        glass_ratio = estimate_glass_reflection_ratio(img_bgr)
+        glass_ratio = estimate_glass_reflection_ratio(img_rgb_np)
 
     main_wall_material = seg_features["main_wall_material"] if seg_features else "unknown"
     roof_share = seg_features["roof_share"] if seg_features else 0.0
@@ -365,7 +399,9 @@ if run:
     with right:
         st.subheader("② Recommendations")
         if not recs:
-            st.info("No recommendations matched. Try adjusting inputs or editing your YAML rules.")
+            st.info(
+                "No recommendations matched. Try adjusting inputs or editing your YAML rules."
+            )
         else:
             for r in recs:
                 with st.container():
