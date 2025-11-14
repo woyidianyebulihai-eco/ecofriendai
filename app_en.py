@@ -1,5 +1,3 @@
-st.write("keys:", list(st.secrets.keys()))
-
 import streamlit as st
 import requests, base64, tempfile
 import numpy as np
@@ -8,6 +6,8 @@ import yaml
 
 st.set_page_config(page_title="EcoHome Advisor", layout="wide")
 st.title("EcoHome Advisor — Sustainable Recommendations")
+st.write("keys:", list(st.secrets.keys()))
+
 
 # ---------------- CONFIG LOADER ----------------
 @st.cache_resource
