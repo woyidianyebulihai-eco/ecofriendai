@@ -50,25 +50,23 @@ HOUSE_MATERIAL_CLASSES = [
 def load_roboflow_config():
     """
     Read Roboflow config from secrets.
-    We will call the Hosted API via HTTPS (detect.roboflow.com), no local SDK.
+    We expect ROBOFLOW_MODEL_PATH to be exactly the string
+    shown on the Roboflow Deploy page after detect.roboflow.com/.
+    e.g. 'house-segmentation-fmysn-urd6s/1'
+    or   'project/house-segmentation-fmysn-urd6s/1'
     """
     try:
         api_key = st.secrets["ROBOFLOW_API_KEY"]
-        model_id = st.secrets["ROBOFLOW_MODEL_ID"]  # e.g. "house-segmentation-xyz"
-        version = int(st.secrets.get("ROBOFLOW_MODEL_VERSION", 1))
+        model_path = st.secrets["ROBOFLOW_MODEL_PATH"]
     except Exception as e:
         st.sidebar.warning(
-            "Roboflow Hosted API not configured correctly. "
+            "Roboflow Hosted API not configured. "
             "Segmentation will be skipped.\n"
             f"Details: {e}"
         )
         return None
 
-    return {
-        "api_key": api_key,
-        "model_id": model_id,
-        "version": version,
-    }
+    return {"api_key": api_key, "model_path": model_path}
 
 rf_cfg = load_roboflow_config()
 
@@ -205,8 +203,10 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, cfg: dict):
         }
 
     api_key = cfg["api_key"]
-    model_id = cfg["model_id"]          # e.g. "house-segmentation-xyz"
-    version = cfg["version"]            # e.g. 1
+model_path = cfg["model_path"]   # e.g. "house-segmentation-fmysn-urd6s/1"
+
+url = f"https://detect.roboflow.com/{model_path}?api_key={api_key}"
+
 
     # Save image to temp file and encode as base64
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
