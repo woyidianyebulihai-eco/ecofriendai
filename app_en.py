@@ -188,10 +188,7 @@ def estimate_glass_reflection_ratio(img_rgb_np: np.ndarray) -> float:
 
 # -------------------- ROBOFLOW SEGMENTATION VIA HTTPS --------------------
 def analyze_house_segments_with_roboflow(pil_image: Image.Image, cfg: dict):
-    """
-    Call Roboflow Hosted API (detect.roboflow.com) to run segmentation.
-    No roboflow Python package, no libGL issues.
-    """
+    """Call Roboflow Hosted API (no SDK, no libGL)."""
     if cfg is None:
         return {
             "main_wall_material": "unknown",
@@ -202,19 +199,16 @@ def analyze_house_segments_with_roboflow(pil_image: Image.Image, cfg: dict):
             "raw_predictions": {},
         }
 
-api_key = cfg["api_key"]
-   model_path = cfg["model_path"]   # e.g. "house-segmentation-fmysn-urd6s/1"
+    api_key = cfg["api_key"]
+    model_path = cfg["model_path"]
 
-   url = f"https://detect.roboflow.com/{model_path}?api_key={api_key}"
-
-
-    # Save image to temp file and encode as base64
+    # Save image and encode as base64
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         pil_image.save(tmp.name, format="JPEG")
         with open(tmp.name, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-    url = f"https://detect.roboflow.com/{model_id}/{version}?api_key={api_key}"
+    url = f"https://detect.roboflow.com/{model_path}?api_key={api_key}"
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
     try:
@@ -232,6 +226,7 @@ api_key = cfg["api_key"]
             "raw_predictions": {},
         }
 
+    # Parsing predictions
     w, h = pil_image.size
     total_area = w * h
     class_areas = defaultdict(float)
@@ -250,12 +245,8 @@ api_key = cfg["api_key"]
     wall_shares = {
         m: class_areas[m] / (total_area + 1e-6) for m in HOUSE_MATERIAL_CLASSES
     }
-    main_wall_material = (
-        max(wall_shares.items(), key=lambda kv: kv[1])[0]
-        if wall_shares
-        else "unknown"
-    )
-    roof_share = class_areas["Roof"] / (total_area + 1e-6) if "Roof" in class_areas else 0.0
+    main_wall_material = max(wall_shares, key=wall_shares.get)
+    roof_share = class_areas.get("Roof", 0.0) / (total_area + 1e-6)
 
     return {
         "main_wall_material": main_wall_material,
@@ -265,6 +256,7 @@ api_key = cfg["api_key"]
         "has_entry_door": has_entry_door,
         "raw_predictions": pred,
     }
+
 
 # -------------------- RULE ENGINE --------------------
 def eval_condition(cond: str, ctx: dict) -> bool:
