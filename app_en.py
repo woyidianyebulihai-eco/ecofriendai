@@ -3,8 +3,8 @@ import cv2, yaml, numpy as np
 from PIL import Image
 
 # -------------------- PAGE SETUP --------------------
-st.set_page_config(page_title="EcoHome Advisor (MVP) - EN", page_icon="🌿", layout="wide")
-st.title("🌿 EcoHome Advisor — Sustainable Renovation Recommender (MVP)")
+st.set_page_config(page_title="EcoHome Advisor", layout="wide")
+st.title("EcoHome Advisor — Sustainable Renovation Recommender")
 
 st.markdown("""
 **How it works**
@@ -132,7 +132,7 @@ with left:
     img_bgr = None
     if img_file is not None:
         image = Image.open(img_file).convert("RGB")
-        st.image(image, caption="Uploaded image", use_container_width=True)
+        st.image(image, caption="Uploaded image", use_column_width=True)
         img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
     run = st.button("Analyze & Recommend", type="primary")
