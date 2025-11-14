@@ -1,3 +1,5 @@
+st.write("keys:", list(st.secrets.keys()))
+
 import streamlit as st
 import requests, base64, tempfile
 import numpy as np
