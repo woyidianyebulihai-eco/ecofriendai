@@ -3,9 +3,8 @@ opencv-python-headless==4.9.0.80
 Pillow==10.4.0
 PyYAML==6.0.2
 numpy==1.26.4
-roboflow
-opencv-python
 Pillow
 numpy
 pyyaml
 streamlit
+requests
